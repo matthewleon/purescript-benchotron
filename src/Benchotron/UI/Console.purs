@@ -11,12 +11,12 @@ import Data.Int (fromNumber)
 import Data.String (joinWith)
 import Data.Date (now, Now())
 import Data.Date.Locale (toLocaleTimeString, Locale())
-import Test.QuickCheck.Gen (GenState())
+import Test.StrongCheck.Gen (GenState(..))
 import Control.Monad.Trans (lift)
 import Control.Monad.State.Class (get)
 import Control.Monad (when)
 import Control.Monad.Eff
-import Control.Monad.Eff.Random (RANDOM(), randomInt)
+import Control.Monad.Eff.Random (RANDOM(), randomRange)
 import Node.FS.Sync (writeTextFile, mkdir, stat, exists)
 import Node.FS.Stats (isDirectory)
 import Node.Encoding (Encoding(..))
@@ -83,8 +83,8 @@ showOptions = map (showOption <<< second getSlugAndTitle) <<< withIndices
 
 runBenchmarkConsole :: forall e. Benchmark -> BenchM e BenchmarkResult
 runBenchmarkConsole benchmark = do
-  state <- get
-  let seed = state.newSeed :: Int
+  GenState state <- get
+  let seed = state.seed
   lift $ do
     stderrWrite $ "### Benchmark: " <> unpackBenchmark _.title benchmark <> " ###\n"
     stderrWrite $ "Using seed: " <> show seed <> "\n"
@@ -111,7 +111,9 @@ runBenchmarkConsole benchmark = do
       ]
 
 getInitialState :: forall e. Eff (random :: RANDOM | e) GenState
-getInitialState = { newSeed: _, size: 10 } <$> randomInt bottom top
+getInitialState = GenState <$> ({ seed: _, size: 10 } <$> randomRange (-x) x)
+  where
+  x = 1e10
 
 runBenchM' :: forall e a. BenchM e a -> Eff (BenchEffects e) a
 runBenchM' action =

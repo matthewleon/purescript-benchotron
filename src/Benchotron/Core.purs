@@ -18,6 +18,7 @@ module Benchotron.Core
   ) where
 
 import Prelude
+import Data.Maybe.Unsafe
 import Data.Exists
 import Data.Identity
 import Data.Tuple
@@ -29,7 +30,7 @@ import Data.Date (Now())
 import Data.Date.Locale (Locale())
 import Control.Apply ((<*))
 import Control.Monad.State.Trans (StateT(), evalStateT)
-import Control.Monad.State.Class (get, put)
+import Control.Monad.State.Class (get, put, state)
 import Control.Monad.Trans (lift)
 import Control.Monad.Eff (Eff())
 import Control.Monad.Eff.Exception (EXCEPTION(), Error(), catchException,
@@ -37,7 +38,8 @@ import Control.Monad.Eff.Exception (EXCEPTION(), Error(), catchException,
 import Node.FS (FS())
 import Control.Monad.Eff.Console (CONSOLE())
 import Control.Monad.Eff.Random  (RANDOM())
-import Test.QuickCheck.Gen (Gen(), GenState(), runGen)
+import Control.Monad.Trampoline (runTrampoline)
+import Test.StrongCheck.Gen (Gen(), GenState(), GenOut(..), applyGen, vectorOf)
 
 import Benchotron.StdIO
 import Benchotron.BenchmarkJS
@@ -123,14 +125,16 @@ type BenchM e a = StateT GenState (Eff (BenchEffects e)) a
 runBenchM :: forall e a. BenchM e a -> GenState -> Eff (BenchEffects e) a
 runBenchM = evalStateT
 
+stepGen' :: forall a. GenState -> Gen a -> Tuple a GenState
+stepGen' s gen =
+  tupleify $ fromJust $ runTrampoline $ applyGen s gen
+  where
+  tupleify (GenOut out) = Tuple (fst out.value) out.state
+
 -- | Use the given generator to generate a random value, using (and modifying)
 -- | the state of the BenchM computation.
 stepGen :: forall e a. Gen a -> BenchM e a
-stepGen gen = do
-  st <- get
-  let out = runGen gen st
-  put out.state
-  return out.value
+stepGen gen = state \s -> stepGen' s gen
 
 runBenchmark :: forall e.
   Benchmark ->
@@ -151,8 +155,7 @@ runBenchmarkF :: forall e a.
 runBenchmarkF benchmark onChange = do
   results <- for (withIndices benchmark.sizes) $ \(Tuple idx size) -> do
     onChange idx size
-    let getAnInput = stepGen $ benchmark.gen size
-    inputs   <- replicateM benchmark.inputsPerSize getAnInput
+    inputs   <- stepGen $ vectorOf benchmark.inputsPerSize $ benchmark.gen size
     allStats <- for benchmark.functions $ \function -> do
                   let name = getName function
                   lift $
