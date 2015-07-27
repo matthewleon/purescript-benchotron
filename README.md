@@ -18,8 +18,8 @@ import Data.Foldable
 import Data.Monoid.Additive
 import Data.Monoid.Multiplicative
 import Control.Monad.Eff
-import Test.QuickCheck.Arbitrary (arbitrary)
-import Test.QuickCheck.Gen (vectorOf)
+import Test.StrongCheck (arbitrary)
+import Test.StrongCheck.Gen (vectorOf)
 import Benchotron.Core
 import Benchotron.UI.Console
 
