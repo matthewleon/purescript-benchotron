@@ -10,7 +10,6 @@ module Benchotron.Core
   , runBenchmark
   , runBenchmarkF
   , BenchM()
-  , runBenchM
   , BenchEffects()
   , BenchmarkResult()
   , ResultSeries()
@@ -22,6 +21,7 @@ import Data.Maybe.Unsafe
 import Data.Exists
 import Data.Identity
 import Data.Tuple
+import Data.Int (toNumber)
 import Data.Array (filter, (..), length, replicateM, zip)
 import Data.Array.Unsafe (head)
 import Data.String (joinWith)
@@ -31,15 +31,11 @@ import Data.Date.Locale (Locale())
 import Control.Apply ((<*))
 import Control.Monad.State.Trans (StateT(), evalStateT)
 import Control.Monad.State.Class (get, put, state)
-import Control.Monad.Trans (lift)
 import Control.Monad.Eff (Eff())
 import Control.Monad.Eff.Exception (EXCEPTION(), Error(), catchException,
                                     throwException, message, error)
-import Node.FS (FS())
-import Control.Monad.Eff.Console (CONSOLE())
-import Control.Monad.Eff.Random  (RANDOM())
 import Control.Monad.Trampoline (runTrampoline)
-import Test.StrongCheck.Gen (Gen(), GenState(), GenOut(..), applyGen, vectorOf)
+import Test.StrongCheck.Gen (Gen(), GenState(..), Seed(), runGen, vectorOf)
 
 import Benchotron.StdIO
 import Benchotron.BenchmarkJS
@@ -120,25 +116,11 @@ getName (BenchmarkFunction f) = runExists go f
   go :: forall b. BenchmarkFunctionF a b -> String
   go (BenchmarkFunctionF o) = o.name
 
-type BenchM e a = StateT GenState (Eff (BenchEffects e)) a
-
-runBenchM :: forall e a. BenchM e a -> GenState -> Eff (BenchEffects e) a
-runBenchM = evalStateT
-
-stepGen' :: forall a. GenState -> Gen a -> Tuple a GenState
-stepGen' s gen =
-  tupleify $ fromJust $ runTrampoline $ applyGen s gen
-  where
-  tupleify (GenOut out) = Tuple (fst out.value) out.state
-
--- | Use the given generator to generate a random value, using (and modifying)
--- | the state of the BenchM computation.
-stepGen :: forall e a. Gen a -> BenchM e a
-stepGen gen = state \s -> stepGen' s gen
+type BenchM e a = Eff (BenchEffects e) a
 
 runBenchmark :: forall e.
   Benchmark ->
-  -- ^ The Benchmark to be run.
+  Seed ->
   (Int -> Int -> BenchM e Unit) ->
   -- ^ Callback for when the size changes; the arguments are current size index
   --   (1-based) , and the current size.
@@ -147,21 +129,21 @@ runBenchmark = unpackBenchmark runBenchmarkF
 
 runBenchmarkF :: forall e a.
   BenchmarkF a ->
-  -- ^ The Benchmark to be run.
+  Seed ->
   (Int -> Int -> BenchM e Unit) ->
-  -- ^ Callback for when the size changes; the arguments are current size index
-  --   (1-based) , and the current size.
   BenchM e BenchmarkResult
-runBenchmarkF benchmark onChange = do
+runBenchmarkF benchmark seed onChange = do
   results <- for (withIndices benchmark.sizes) $ \(Tuple idx size) -> do
     onChange idx size
-    inputs   <- stepGen $ vectorOf benchmark.inputsPerSize $ benchmark.gen size
+    -- TODO: Gen.toLazyList would be better
+    let inputs = getInputs (seed + toNumber idx)
+                           benchmark.inputsPerSize
+                           (benchmark.gen size)
     allStats <- for benchmark.functions $ \function -> do
                   let name = getName function
-                  lift $
-                    handleBenchmarkException name size $ do
-                      stats <- runBenchmarkFunction inputs function
-                      return { name: name, stats: stats }
+                  handleBenchmarkException name size $ do
+                    stats <- runBenchmarkFunction inputs function
+                    return { name: name, stats: stats }
 
     return { size: size, allStats: allStats }
 
@@ -175,6 +157,11 @@ runBenchmarkF benchmark onChange = do
 
   where
   withIndices arr = zip (1..(length arr)) arr
+
+getInputs :: forall e a. Seed -> Int -> Gen a -> Array a
+getInputs seed count gen =
+  let state = GenState { size: 10, seed: seed }
+  in fst $ runTrampoline $ runGen count state gen
 
 -- TODO: use purescript-exceptions instead. This appears to be blocked on:
 --    https://github.com/purescript/purescript-exceptions/issues/5
@@ -195,11 +182,8 @@ runBenchmarkFunction inputs (BenchmarkFunction function') =
 
 type BenchEffects e
   = ( err       :: EXCEPTION
-    , fs        :: FS
     , now       :: Now
     , locale    :: Locale
-    , console   :: CONSOLE
-    , random    :: RANDOM
     , benchmark :: BENCHMARK
     | e
     )

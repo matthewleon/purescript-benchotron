@@ -7,16 +7,16 @@ import Data.Maybe
 import Data.Foldable (traverse_)
 import Data.Profunctor.Strong (second, (&&&))
 import qualified Data.Array as A
-import Data.Int (fromNumber)
+import Data.Int (fromNumber, toNumber)
 import Data.String (joinWith)
 import Data.Date (now, Now())
 import Data.Date.Locale (toLocaleTimeString, Locale())
 import Test.StrongCheck.Gen (GenState(..))
-import Control.Monad.Trans (lift)
-import Control.Monad.State.Class (get)
 import Control.Monad (when)
 import Control.Monad.Eff
-import Control.Monad.Eff.Random (RANDOM(), randomRange)
+import Control.Monad.Eff.Random (RANDOM(), randomRange, randomInt)
+import Control.Monad.Eff.Console (CONSOLE())
+import Node.FS (FS())
 import Node.FS.Sync (writeTextFile, mkdir, stat, exists)
 import Node.FS.Stats (isDirectory)
 import Node.Encoding (Encoding(..))
@@ -33,9 +33,16 @@ parseAnswer "*" = Just All
 parseAnswer x = let y = fromNumber $ readInt 10 x
                 in  map One y
 
+type ConsoleEffects e =
+  ( console :: CONSOLE
+  , fs :: FS
+  , random :: RANDOM
+  | e
+  )
+
 -- | TODO: Only fetch one seed from global random generator, have this return
 -- | BenchM instead?
-runSuite :: forall e. Array Benchmark -> Eff (BenchEffects e) Unit
+runSuite :: forall e. Array Benchmark -> BenchM (ConsoleEffects e) Unit
 runSuite bs = do
   case bs of
     []  -> stdoutWrite "Empty suite; nothing to do.\n"
@@ -71,7 +78,7 @@ runSuite bs = do
             Just b  -> go b
             Nothing -> stdoutWrite "No such benchmark.\n" >> questionLoop
 
-showOptions :: forall e. Array Benchmark -> Array String
+showOptions :: Array Benchmark -> Array String
 showOptions = map (showOption <<< second getSlugAndTitle) <<< withIndices
   where
   getSlugAndTitle =
@@ -81,25 +88,23 @@ showOptions = map (showOption <<< second getSlugAndTitle) <<< withIndices
   withIndices arr =
     A.zip (A.range 1 (A.length arr)) arr
 
-runBenchmarkConsole :: forall e. Benchmark -> BenchM e BenchmarkResult
+runBenchmarkConsole :: forall e. Benchmark -> BenchM (ConsoleEffects e) BenchmarkResult
 runBenchmarkConsole benchmark = do
-  GenState state <- get
-  let seed = state.seed
-  lift $ do
-    stderrWrite $ "### Benchmark: " <> unpackBenchmark _.title benchmark <> " ###\n"
-    stderrWrite $ "Using seed: " <> show seed <> "\n"
-    noteTime \t -> "Started at: " <> t <> "\n"
-  r <- runBenchmark benchmark progress
-  lift $ do
-    stderrWrite "\n"
-    noteTime \t -> "Finished at: " <> t <> "\n"
+  seed <- toNumber <$> randomInt 1 100000
+  stderrWrite $ "### Benchmark: " <> unpackBenchmark _.title benchmark <> " ###\n"
+  stderrWrite $ "Using seed: " <> show seed <> "\n"
+  noteTime \t -> "Started at: " <> t <> "\n"
+  r <- runBenchmark benchmark seed progress
+  stderrWrite "\n"
+  noteTime \t -> "Finished at: " <> t <> "\n"
   return r
+
   where
   noteTime f = now >>= toLocaleTimeString >>= (stderrWrite <<< f)
   countSizes = A.length $ unpackBenchmark _.sizes benchmark
   clearLine = "\r\ESC[K"
   progress idx size =
-    lift $ stderrWrite $ joinWith ""
+    stderrWrite $ joinWith ""
       [ clearLine
       , "Running... n="
       , show size
@@ -110,28 +115,19 @@ runBenchmarkConsole benchmark = do
       , ")"
       ]
 
-getInitialState :: forall e. Eff (random :: RANDOM | e) GenState
-getInitialState = GenState <$> ({ seed: _, size: 10 } <$> randomRange (-x) x)
-  where
-  x = 1e10
-
-runBenchM' :: forall e a. BenchM e a -> Eff (BenchEffects e) a
-runBenchM' action =
-  getInitialState >>= runBenchM action
-
 -- | Run a benchmark and print the results to a file. This will only work on
 -- | node.js.
-benchmarkToFile :: forall e. Benchmark -> String -> Eff (BenchEffects e) Unit
+benchmarkToFile :: forall e. Benchmark -> String -> BenchM (ConsoleEffects e) Unit
 benchmarkToFile bench path = do
-  results <- runBenchM' $ runBenchmarkConsole bench
+  results <- runBenchmarkConsole bench
   writeTextFile UTF8 path $ stringifyResult results
   stderrWrite $ "Results written to " <> path <> "\n"
 
 -- | Run a benchmark and print the results to standard output. This will only
 -- | work on node.js.
-benchmarkToStdout :: forall e. Benchmark -> Eff (BenchEffects e) Unit
+benchmarkToStdout :: forall e. Benchmark -> BenchM (ConsoleEffects e) Unit
 benchmarkToStdout bench = do
-  results <- runBenchM' $ runBenchmarkConsole bench
+  results <- runBenchmarkConsole bench
   stdoutWrite $ stringifyResult results
 
 stringifyResult :: BenchmarkResult -> String
